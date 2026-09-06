@@ -295,12 +295,12 @@ with tab_player:
 with tab_at:
   st.subheader("📋 AT 의무팀 관리자 대시보드")
 
-  # AT 접근 비밀번호 설정
+  # AT 접근 비밀번호: 7101
   at_pw = st.text_input(
       "트레이너 보안 비밀번호 입력", type="password", key="at_password"
   )
 
-  if at_pw == "1234":  # 기본 비밀번호: 1234
+  if at_pw == "7101":
     df = pd.read_sql("SELECT * FROM records", conn)
 
     if df.empty:
