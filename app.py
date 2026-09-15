@@ -1,8 +1,9 @@
-import sqlite3
 from datetime import date
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+import os
 import smtplib
+import sqlite3
 import pandas as pd
 import streamlit as st
 
@@ -70,39 +71,49 @@ st.markdown(
 )
 
 # ====================================================
-# 2. 로컬 데이터베이스(SQLite) 초기화
+# 2. 로컬 영구 데이터베이스(SQLite) 절대경로 설정
 # ====================================================
-conn = sqlite3.connect("injury_records.db", check_same_thread=False)
-cursor = conn.cursor()
-cursor.execute(
-    """
-CREATE TABLE IF NOT EXISTS records (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    player_name TEXT,
-    jersey_pos TEXT,
-    injury_date TEXT,
-    record_date TEXT,
-    side TEXT,
-    body_part TEXT,
-    current_pain INTEGER,
-    prev_injury TEXT,
-    mechanism TEXT,
-    initial_pain INTEGER,
-    pain_type TEXT,
-    obj_appearance TEXT,
-    obj_rom TEXT,
-    obj_mmt TEXT,
-    obj_gait TEXT,
-    ass_trainer_opinion TEXT,
-    ass_diagnosis TEXT,
-    plan_action TEXT,
-    plan_limit TEXT,
-    plan_return TEXT,
-    plan_rehab TEXT
-)
-"""
-)
-conn.commit()
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(BASE_DIR, "injury_records_permanent.db")
+
+
+def get_db_connection():
+  conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+  conn.row_factory = sqlite3.Row
+  return conn
+
+
+# DB 초기 테이블 생성
+with get_db_connection() as init_conn:
+  init_conn.execute(
+      """
+  CREATE TABLE IF NOT EXISTS records (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      player_name TEXT NOT NULL,
+      jersey_pos TEXT,
+      injury_date TEXT,
+      record_date TEXT,
+      side TEXT,
+      body_part TEXT NOT NULL,
+      current_pain INTEGER,
+      prev_injury TEXT,
+      mechanism TEXT,
+      initial_pain INTEGER,
+      pain_type TEXT,
+      obj_appearance TEXT DEFAULT '',
+      obj_rom TEXT DEFAULT '',
+      obj_mmt TEXT DEFAULT '',
+      obj_gait TEXT DEFAULT '',
+      ass_trainer_opinion TEXT DEFAULT '',
+      ass_diagnosis TEXT DEFAULT '',
+      plan_action TEXT DEFAULT '',
+      plan_limit TEXT DEFAULT '미정',
+      plan_return TEXT DEFAULT '',
+      plan_rehab TEXT DEFAULT ''
+  )
+  """
+  )
+  init_conn.commit()
 
 # ====================================================
 # 3. 메일 발송 로직
@@ -151,7 +162,7 @@ def send_injury_email(data: dict) -> bool:
 
 
 # ====================================================
-# 4. 상단 탭 구성 (선수 입력 탭 / AT 관리자 탭)
+# 4. 상단 탭 구성
 # ====================================================
 tab_player, tab_at = st.tabs(
     ["📱 선수 차트 입력", "📋 AT 관리자 대시보드 (SOAP 관리)"]
@@ -257,60 +268,60 @@ with tab_player:
             "pain_type": ", ".join(pain_types) if pain_types else "없음",
         }
 
-        # DB에 저장
-        cursor.execute(
-            """
+        # DB 영구 저장
+        with get_db_connection() as conn:
+          conn.execute(
+              """
                 INSERT INTO records (
                     player_name, jersey_pos, injury_date, record_date, side, body_part,
-                    current_pain, prev_injury, mechanism, initial_pain, pain_type,
-                    obj_appearance, obj_rom, obj_mmt, obj_gait, ass_trainer_opinion,
-                    ass_diagnosis, plan_action, plan_limit, plan_return, plan_rehab
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', '', '', '', '', '', '미정', '', '')
+                    current_pain, prev_injury, mechanism, initial_pain, pain_type
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (
-                payload["player_name"],
-                payload["jersey_pos"],
-                payload["injury_date"],
-                payload["record_date"],
-                payload["side"],
-                payload["body_part"],
-                payload["current_pain"],
-                payload["prev_injury"],
-                payload["mechanism"],
-                payload["initial_pain"],
-                payload["pain_type"],
-            ),
-        )
-        conn.commit()
+              (
+                  payload["player_name"],
+                  payload["jersey_pos"],
+                  payload["injury_date"],
+                  payload["record_date"],
+                  payload["side"],
+                  payload["body_part"],
+                  payload["current_pain"],
+                  payload["prev_injury"],
+                  payload["mechanism"],
+                  payload["initial_pain"],
+                  payload["pain_type"],
+              ),
+          )
+          conn.commit()
 
         # 메일 발송
         with st.spinner("의무팀 메일함으로 안전하게 전송 중..."):
           send_injury_email(payload)
-        st.success("부상 일지가 정상 접수되었습니다.")
+        st.success("부상 일지가 영구 DB에 등록 및 정상 접수되었습니다.")
         st.balloons()
 
 # ----------------------------------------------------
-# 탭 2: AT 관리자 대시보드 (O / A / P 작성 및 차트 분석)
+# 탭 2: AT 관리자 대시보드 (비밀번호: 7101)
 # ----------------------------------------------------
 with tab_at:
   st.subheader("📋 AT 의무팀 관리자 대시보드")
 
-  # AT 접근 비밀번호: 7101
   at_pw = st.text_input(
       "트레이너 보안 비밀번호 입력", type="password", key="at_password"
   )
 
   if at_pw == "7101":
-    df = pd.read_sql("SELECT * FROM records", conn)
+    with get_db_connection() as conn:
+      df = pd.read_sql("SELECT * FROM records ORDER BY id DESC", conn)
 
     if df.empty:
-      st.info("현재 접수된 선수 부상 일지가 없습니다.")
+      st.info(
+          "현재 접수된 선수 부상 일지가 없습니다. (선수 입력 시 누적 보존됩니다)"
+      )
     else:
-      # 상단 통계 바
       m1, m2, m3 = st.columns(3)
-      m1.metric("총 부상 접수 건수", f"{len(df)}건")
+      m1.metric("총 누적 부상 건수", f"{len(df)}건")
       m2.metric("등록 선수 수", f"{df['player_name'].nunique()}명")
-      latest_row = df.iloc[-1]
+      latest_row = df.iloc[0]
       m3.metric(
           "최근 보고 선수",
           f"{latest_row['player_name']} ({latest_row['body_part']})",
@@ -329,7 +340,6 @@ with tab_at:
             "record_date"
         )
 
-        # 통증 회복 추이 꺾은선 차트
         st.markdown(f"**📈 [{target_player}] 통증 지수(NRS) 회복 추이**")
         chart_data = (
             player_df[["record_date", "current_pain"]]
@@ -338,7 +348,6 @@ with tab_at:
         )
         st.line_chart(chart_data)
 
-        # 특정 차트 선택
         record_options = {
             f"ID {r['id']} | {r['record_date']} - {r['side']} {r['body_part']}": r[
                 "id"
@@ -351,7 +360,6 @@ with tab_at:
         target_id = record_options[selected_label]
         target_record = df[df["id"] == target_id].iloc[0]
 
-        # 선수가 보낸 정보 요약 확인
         st.markdown(
             f"""
             <div class="card-box">
@@ -367,10 +375,22 @@ with tab_at:
             unsafe_allow_html=True,
         )
 
+        # AT 수동 삭제 기능 (내가 직접 삭제를 누를 때만 삭제)
+        st.markdown("---")
+        st.markdown("##### 🗑️ 해당 기록 영구 삭제")
+        st.caption(
+            "※ 삭제 버튼을 누르지 않는 한 이 기록은 영구적으로 보존됩니다."
+        )
+        if st.button("⚠️ 선택한 이 부상 일지 영구 삭제", key="del_btn"):
+          with get_db_connection() as conn:
+            conn.execute("DELETE FROM records WHERE id = ?", (target_id,))
+            conn.commit()
+          st.warning(f"ID {target_id}번 일지가 영구 삭제되었습니다.")
+          st.rerun()
+
       with col_right:
         st.markdown("#### 2. AT 차트 작성 (Objective / Assessment / Plan)")
         with st.form("at_soap_form"):
-          # Objective
           st.markdown("**[Objective - 객관적 검사]**")
           appearance = st.multiselect(
               "4. 외관 확인",
@@ -408,7 +428,6 @@ with tab_at:
               index=0,
           )
 
-          # Assessment
           st.markdown("**[Assessment - 평가]**")
           opinion = st.text_area(
               "8. 트레이너 소견",
@@ -421,7 +440,6 @@ with tab_at:
               placeholder="예: 방문 완료 (전거비인대 부분파열 / X-ray 골절 없음)",
           )
 
-          # Plan
           st.markdown("**[Plan - 조치 및 계획]**")
           actions = st.multiselect(
               "10. 당일 현장 조치",
@@ -455,43 +473,43 @@ with tab_at:
           save_btn = st.form_submit_button("트레이너 차트 저장하기")
 
           if save_btn:
-            cursor.execute(
-                """
+            with get_db_connection() as conn:
+              conn.execute(
+                  """
                     UPDATE records
                     SET obj_appearance = ?, obj_rom = ?, obj_mmt = ?, obj_gait = ?,
                         ass_trainer_opinion = ?, ass_diagnosis = ?, plan_action = ?,
                         plan_limit = ?, plan_return = ?, plan_rehab = ?
                     WHERE id = ?
                 """,
-                (
-                    ", ".join(appearance),
-                    rom,
-                    mmt,
-                    gait,
-                    opinion,
-                    diagnosis,
-                    ", ".join(actions),
-                    limit,
-                    return_time,
-                    rehab_plan,
-                    target_id,
-                ),
-            )
-            conn.commit()
+                  (
+                      ", ".join(appearance),
+                      rom,
+                      mmt,
+                      gait,
+                      opinion,
+                      diagnosis,
+                      ", ".join(actions),
+                      limit,
+                      return_time,
+                      rehab_plan,
+                      target_id,
+                  ),
+              )
+              conn.commit()
             st.success(
                 f"[{target_record['player_name']}] 선수의 트레이너 평가(O/A/P)가"
-                " 저장되었습니다."
+                " 영구 저장되었습니다."
             )
             st.rerun()
 
       st.divider()
-      # 전체 엑셀 다운로드 기능
-      st.markdown("#### 3. 선수단 부상 데이터베이스 백업")
+      st.markdown("#### 3. 선수단 누적 데이터 백업 (CSV)")
       csv_data = df.to_csv(index=False).encode("utf-8-sig")
       st.download_button(
-          label="📥 전체 부상자 명단 엑셀(CSV) 다운로드",
+          label="📥 전체 부상자 누적 엑셀(CSV) 다운로드",
           data=csv_data,
-          file_name=f"부상자_차트_전체누적_{date.today()}.csv",
+          file_name=f"선수단_부상일지_영구누적_{date.today()}.csv",
           mime="text/csv",
       )
 
